@@ -1,0 +1,70 @@
+# Phase 20 — P1-D: CI/CD Pipeline
+# Runs tests against a real PostgreSQL service container on every push and PR.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: strategy_calls_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d strategy_calls_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/strategy_calls_ci
+      JWT_SECRET: ci-test-secret-key-that-is-at-least-32-chars
+      JWT_ALGORITHM: HS256
+      APP_ENV: test
+      SCHEDULER_ENABLED: "false"
+      GOOGLE_CREDENTIALS: "{}"
+      OPENAI_API_KEY: "sk-test-placeholder"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify imports
+        run: python -c "import app.main; print('app.main imports OK')"
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ --timeout=120 -q --tb=short
+
+      - name: Check for collection errors
+        if: always()
+        run: |
+          python -m pytest tests/ --collect-only -q 2>&1 | tail -5
