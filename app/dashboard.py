@@ -6667,6 +6667,23 @@ function renderAuditLog(events){
    INIT (Phase 6F + OAuth callback redirect)
    ========================================= */
 (function init(){
+  /* Zoom OAuth redirect fix: when the Zoom authorization server
+     redirects back to /dashboard?code=...&state=... (because the
+     org-vault redirect_uri points here), forward to the actual
+     callback endpoint so the code-for-token exchange runs. */
+  var _oauthParams = new URLSearchParams(window.location.search);
+  var _oc = _oauthParams.get('code');
+  var _os = _oauthParams.get('state');
+  var _oe = _oauthParams.get('error');
+  if(_oc && _os){
+    window.location.href = '/auth/zoom/callback?code='+encodeURIComponent(_oc)+'&state='+encodeURIComponent(_os);
+    return;
+  }
+  if(_oe && _os){
+    window.location.href = '/auth/zoom/callback?error='+encodeURIComponent(_oe)+'&state='+encodeURIComponent(_os);
+    return;
+  }
+
   var token = getToken();
   if(token){
     loadCurrentUser().then(function(user){

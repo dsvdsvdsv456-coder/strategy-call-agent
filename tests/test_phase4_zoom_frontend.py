@@ -514,6 +514,39 @@ class TestDashboardHTMLContainsZoomUI:
         body = match.group(0)
         assert 'try' in body and 'catch' in body, "connectZoom must have try/catch"
 
+    def test_init_forwards_zoom_oauth_code_and_state(self):
+        """init() detects ?code=...&state=... and redirects to /auth/zoom/callback."""
+        assert "/auth/zoom/callback" in self.html, \
+            "init() must forward code+state to /auth/zoom/callback"
+        assert "encodeURIComponent" in self.html, \
+            "OAuth params must be URI-encoded before forwarding"
+
+    def test_init_forwards_zoom_oauth_error(self):
+        """init() detects ?error=...&state=... and redirects to /auth/zoom/callback."""
+        # The error forwarding should also go to /auth/zoom/callback
+        # Check that 'error' param is handled in the OAuth redirect block
+        import re
+        # Find the OAuth redirect block in init()
+        match = re.search(
+            r'if\(_oc && _os\).*?if\(_oe && _os\)',
+            self.html, re.DOTALL
+        )
+        assert match is not None, \
+            "init() must handle both code+state and error+state OAuth redirects"
+        block = match.group(0)
+        assert "/auth/zoom/callback" in block, \
+            "Error redirect must go to /auth/zoom/callback"
+
+    def test_init_returns_after_oauth_redirect(self):
+        """init() returns early after OAuth redirect to prevent further processing."""
+        import re
+        match = re.search(
+            r'if\(_oc && _os\)\{[^}]*return;[^}]*\}',
+            self.html, re.DOTALL
+        )
+        assert match is not None, \
+            "init() must return early after OAuth code+state redirect"
+
 
 class TestCredentialFormExists:
     """Verify the dashboard contains a Zoom credential form for org-owned OAuth.
