@@ -10,6 +10,7 @@ Create Date: 2026-08-22
 """
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 
 revision = "007_follow_up_system"
 down_revision = "006_call_management_fields"
@@ -63,13 +64,19 @@ def upgrade() -> None:
         sa.Column("notes", sa.Text(), nullable=True),
         sa.Column(
             "priority",
-            follow_up_priority_enum,
+            PG_ENUM(
+                name="follow_up_priority",
+                create_type=False,
+            ),
             nullable=False,
             server_default="medium",
         ),
         sa.Column(
             "status",
-            follow_up_status_enum,
+            PG_ENUM(
+                name="follow_up_status",
+                create_type=False,
+            ),
             nullable=False,
             server_default="pending",
         ),
