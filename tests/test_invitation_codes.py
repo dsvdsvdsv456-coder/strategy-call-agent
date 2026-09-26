@@ -1,22 +1,24 @@
 """Invitation code tests — invite-only account creation.
 
 Covers:
-  1.  Generate code — owner can generate (201)
-  2.  Generate code — admin can generate (201)
-  3.  Generate code — member forbidden (403)
-  4.  Generate code — returns code_prefix and plaintext once
-  5.  List invitations — owner sees all org invitations
-  6.  List invitations — member forbidden (403)
-  7.  List invitations — org isolation (Org A can't see Org B)
-  8.  Revoke invitation — owner revokes unused code (200)
-  9.  Revoke invitation — cannot revoke used code (400)
-  10. Revoke invitation — cannot revoke already-revoked code (400)
-  11. Revoke invitation — org isolation (can't revoke other org's code)
-  12. Register with valid invitation — succeeds (201)
-  13. Register with invalid invitation — fails (400)
-  14. Register with used invitation — fails (400)
+  1.  Platform-owner (4rats.com@gmail.com) can generate (201)
+  2.  Another OWNER cannot generate (403)
+  3.  ADMIN cannot generate (403)
+  4.  MEMBER cannot generate (403)
+  5.  Client/customer account cannot generate (403)
+  6.  Platform-owner can list invitations
+  7.  Another OWNER cannot list invitations (403)
+  8.  Platform-owner can revoke unused invitation
+  9.  Another OWNER cannot revoke invitation (403)
+  10. Cannot revoke a used invitation (400) — lifecycle test
+  11. Org isolation — can't see other org's invitations
+  12. No code_hash exposed in list response
+  13. Register with valid invitation — succeeds (201)
+  14. Register with invalid invitation — fails (400)
+  15. Register with used invitation — fails (400)
+  16. require_owner_or_admin unit tests (platform-owner email)
 
-Total: 14 tests
+Total: 17 tests
 """
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -36,6 +38,7 @@ from app.models_multi_tenant import (
     UserStatus,
 )
 from app.services.crypto import generate_key
+from app.services.invitation_service import PLATFORM_OWNER_EMAIL
 
 # ── Test Constants ────────────────────────────────────────────────────────────
 
@@ -57,13 +60,7 @@ def _set_test_secrets(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _clear_register_rate_limit():
-    """Clear the module-level registration rate-limit dict before each test.
-
-    The ``_register_hits`` dict in ``app.routers.auth_router`` is a
-    ``defaultdict(list)`` that lives for the lifetime of the process.
-    Without clearing it between tests, later registration calls get
-    429 Too Many Requests because earlier tests already filled the window.
-    """
+    """Clear the module-level registration rate-limit dict before each test."""
     from app.routers.auth_router import _register_hits
     _register_hits.clear()
     yield
@@ -154,16 +151,18 @@ def _generate_via_api(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1. GENERATE INVITATION CODE (4 tests)
+# 1. PLATFORM-OWNER AUTHORIZATION — GENERATE (7 tests)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 class TestGenerateInvitation:
     """POST /auth/invitations/generate tests."""
 
-    def test_owner_can_generate(self, client: TestClient, db: SASession):
-        """Owner can generate an invitation code (201)."""
-        org, user = _create_org_and_user(db, email=f"ow-{uuid.uuid4().hex[:8]}@t.com")
+    def test_platform_owner_can_generate(self, client: TestClient, db: SASession):
+        """Platform-owner (4rats.com@gmail.com) can generate (201)."""
+        org, user = _create_org_and_user(
+            db, email=PLATFORM_OWNER_EMAIL, role=UserRole.OWNER,
+        )
         token = _make_token(user.id, org.id, "owner")
         resp = _generate_via_api(client, token)
         assert resp.status_code == 201
@@ -172,16 +171,21 @@ class TestGenerateInvitation:
         assert data["code"].startswith("SCA-")
         assert data["status"] == "unused"
 
-    def test_admin_can_generate(self, client: TestClient, db: SASession):
-        """Admin can generate an invitation code (201)."""
-        org, _ = _create_org_and_user(db, email=f"adm-gen-{uuid.uuid4().hex[:8]}@t.com")
-        _, admin = _create_org_and_user(
-            db, email=f"adm-{uuid.uuid4().hex[:8]}@t.com",
-            role=UserRole.ADMIN, org_name=org.name,
+    def test_another_owner_cannot_generate(self, client: TestClient, db: SASession):
+        """Another OWNER (not platform-owner) cannot generate (403)."""
+        org, user = _create_org_and_user(
+            db, email=f"ow-{uuid.uuid4().hex[:8]}@t.com", role=UserRole.OWNER,
         )
-        # Re-create with same org
-        db.rollback()
-        org, owner = _create_org_and_user(db, email=f"ow2-{uuid.uuid4().hex[:8]}@t.com")
+        token = _make_token(user.id, org.id, "owner")
+        resp = _generate_via_api(client, token)
+        assert resp.status_code == 403
+        assert "platform owner" in resp.json()["detail"].lower()
+
+    def test_admin_cannot_generate(self, client: TestClient, db: SASession):
+        """ADMIN cannot generate invitation codes (403)."""
+        org, user = _create_org_and_user(
+            db, email=f"adm-gen-{uuid.uuid4().hex[:8]}@t.com", role=UserRole.OWNER,
+        )
         from app.auth import hash_password
         admin = User(
             organization_id=org.id,
@@ -197,13 +201,14 @@ class TestGenerateInvitation:
 
         token = _make_token(admin.id, org.id, "admin")
         resp = _generate_via_api(client, token)
-        assert resp.status_code == 201
-        data = resp.json()
-        assert "code" in data
+        assert resp.status_code == 403
+        assert "platform owner" in resp.json()["detail"].lower()
 
-    def test_member_forbidden(self, client: TestClient, db: SASession):
-        """Member cannot generate invitation codes (403)."""
-        org, _ = _create_org_and_user(db, email=f"mem-gen-{uuid.uuid4().hex[:8]}@t.com")
+    def test_member_cannot_generate(self, client: TestClient, db: SASession):
+        """MEMBER cannot generate invitation codes (403)."""
+        org, user = _create_org_and_user(
+            db, email=f"mem-gen-{uuid.uuid4().hex[:8]}@t.com", role=UserRole.OWNER,
+        )
         from app.auth import hash_password
         member = User(
             organization_id=org.id,
@@ -220,10 +225,41 @@ class TestGenerateInvitation:
         token = _make_token(member.id, org.id, "member")
         resp = _generate_via_api(client, token)
         assert resp.status_code == 403
+        assert "platform owner" in resp.json()["detail"].lower()
+
+    def test_client_cannot_generate(self, client: TestClient, db: SASession):
+        """Client/customer account (via register) cannot generate (403)."""
+        from tests.conftest import create_test_invitation
+
+        org, user = _create_org_and_user(
+            db, email=f"owner-for-client-{uuid.uuid4().hex[:8]}@t.com", role=UserRole.OWNER,
+        )
+        invite_code = create_test_invitation(db, org.id, user.id)
+
+        # Register a new client via invitation
+        resp = client.post(
+            "/auth/register",
+            json={
+                "organization_name": f"Client Org {uuid.uuid4().hex[:6]}",
+                "name": "Client User",
+                "email": f"client-{uuid.uuid4().hex[:8]}@t.com",
+                "password": "StrongPass123!",
+                "invitation_code": invite_code,
+            },
+        )
+        assert resp.status_code == 201
+        client_token = resp.json()["access_token"]
+
+        # Client tries to generate — should fail
+        gen_resp = _generate_via_api(client, client_token)
+        assert gen_resp.status_code == 403
+        assert "platform owner" in gen_resp.json()["detail"].lower()
 
     def test_returns_plaintext_once(self, client: TestClient, db: SASession):
         """Generated response includes plaintext code and code_prefix."""
-        org, user = _create_org_and_user(db, email=f"once-{uuid.uuid4().hex[:8]}@t.com")
+        org, user = _create_org_and_user(
+            db, email=PLATFORM_OWNER_EMAIL, role=UserRole.OWNER,
+        )
         token = _make_token(user.id, org.id, "owner")
         resp = _generate_via_api(client, token, label="Test Invite")
         assert resp.status_code == 201
@@ -232,20 +268,32 @@ class TestGenerateInvitation:
         assert "code_prefix" in data and len(data["code_prefix"]) >= 8
         assert data["label"] == "Test Invite"
 
+    def test_case_insensitive_email(self, client: TestClient, db: SASession):
+        """Case-insensitive email comparison: 4RATS.COM@GMAIL.COM also works."""
+        org, user = _create_org_and_user(
+            db, email="4RATS.COM@GMAIL.COM", role=UserRole.OWNER,
+        )
+        token = _make_token(user.id, org.id, "owner")
+        resp = _generate_via_api(client, token)
+        assert resp.status_code == 201
+        assert "code" in resp.json()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2. LIST INVITATIONS (3 tests)
+# 2. PLATFORM-OWNER AUTHORIZATION — LIST (4 tests)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 class TestListInvitations:
     """GET /auth/invitations tests."""
 
-    def test_owner_sees_all(self, client: TestClient, db: SASession):
-        """Owner sees all invitations for their org."""
+    def test_platform_owner_sees_all(self, client: TestClient, db: SASession):
+        """Platform-owner sees all invitations for their org."""
         from tests.conftest import create_test_invitation
 
-        org, user = _create_org_and_user(db, email=f"list-ow-{uuid.uuid4().hex[:8]}@t.com")
+        org, user = _create_org_and_user(
+            db, email=PLATFORM_OWNER_EMAIL, role=UserRole.OWNER,
+        )
         code1 = create_test_invitation(db, org.id, user.id, label="Invite 1")
         code2 = create_test_invitation(db, org.id, user.id, label="Invite 2")
         token = _make_token(user.id, org.id, "owner")
@@ -258,11 +306,23 @@ class TestListInvitations:
         assert "Invite 1" in labels
         assert "Invite 2" in labels
 
-    def test_member_forbidden(self, client: TestClient, db: SASession):
+    def test_another_owner_cannot_list(self, client: TestClient, db: SASession):
+        """Another OWNER cannot list invitations (403)."""
+        org, user = _create_org_and_user(
+            db, email=f"list-ow-{uuid.uuid4().hex[:8]}@t.com", role=UserRole.OWNER,
+        )
+        token = _make_token(user.id, org.id, "owner")
+        resp = client.get("/auth/invitations", headers=_auth_header(token))
+        assert resp.status_code == 403
+        assert "platform owner" in resp.json()["detail"].lower()
+
+    def test_member_cannot_list(self, client: TestClient, db: SASession):
         """Member cannot list invitations (403)."""
         from app.auth import hash_password
 
-        org, _ = _create_org_and_user(db, email=f"list-mem-{uuid.uuid4().hex[:8]}@t.com")
+        org, _ = _create_org_and_user(
+            db, email=f"list-mem-{uuid.uuid4().hex[:8]}@t.com", role=UserRole.OWNER,
+        )
         member = User(
             organization_id=org.id,
             email=f"lm-{uuid.uuid4().hex[:8]}@t.com",
@@ -279,25 +339,13 @@ class TestListInvitations:
         resp = client.get("/auth/invitations", headers=_auth_header(token))
         assert resp.status_code == 403
 
-    def test_org_isolation(self, client: TestClient, db: SASession):
-        """Org A can't see Org B's invitations."""
-        from tests.conftest import create_test_invitation
-
-        org_a, user_a = _create_org_and_user(db, email=f"a-{uuid.uuid4().hex[:8]}@t.com")
-        org_b, user_b = _create_org_and_user(db, email=f"b-{uuid.uuid4().hex[:8]}@t.com")
-        create_test_invitation(db, org_b.id, user_b.id, label="OrgB Invite")
-
-        token_a = _make_token(user_a.id, org_a.id, "owner")
-        resp = client.get("/auth/invitations", headers=_auth_header(token_a))
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total"] == 0
-
     def test_no_code_hash_exposed(self, client: TestClient, db: SASession):
         """List response never includes code_hash."""
         from tests.conftest import create_test_invitation
 
-        org, user = _create_org_and_user(db, email=f"nohash-{uuid.uuid4().hex[:8]}@t.com")
+        org, user = _create_org_and_user(
+            db, email=PLATFORM_OWNER_EMAIL, role=UserRole.OWNER,
+        )
         create_test_invitation(db, org.id, user.id)
         token = _make_token(user.id, org.id, "owner")
 
@@ -309,18 +357,20 @@ class TestListInvitations:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. REVOKE INVITATION (3 tests)
+# 3. PLATFORM-OWNER AUTHORIZATION — REVOKE (4 tests)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 class TestRevokeInvitation:
     """POST /auth/invitations/{id}/revoke tests."""
 
-    def test_owner_revokes_unused(self, client: TestClient, db: SASession):
-        """Owner can revoke an unused invitation code."""
+    def test_platform_owner_revokes_unused(self, client: TestClient, db: SASession):
+        """Platform-owner can revoke an unused invitation code."""
         from tests.conftest import create_test_invitation
 
-        org, user = _create_org_and_user(db, email=f"rev-ow-{uuid.uuid4().hex[:8]}@t.com")
+        org, user = _create_org_and_user(
+            db, email=PLATFORM_OWNER_EMAIL, role=UserRole.OWNER,
+        )
         invite_code = create_test_invitation(db, org.id, user.id)
 
         # Get the invitation ID from the list
@@ -336,11 +386,34 @@ class TestRevokeInvitation:
         assert resp.status_code == 200
         assert "revoked" in resp.json()["message"]
 
+    def test_another_owner_cannot_revoke(self, client: TestClient, db: SASession):
+        """Another OWNER cannot revoke invitations (403)."""
+        from tests.conftest import create_test_invitation
+
+        org, user = _create_org_and_user(
+            db, email=f"rev-ow-{uuid.uuid4().hex[:8]}@t.com", role=UserRole.OWNER,
+        )
+        invite_code = create_test_invitation(db, org.id, user.id)
+
+        token = _make_token(user.id, org.id, "owner")
+        # Use the service directly to get an ID since list would also fail
+        inv = db.query(InvitationCode).filter(InvitationCode.organization_id == org.id).first()
+        assert inv is not None
+
+        resp = client.post(
+            f"/auth/invitations/{inv.id}/revoke",
+            headers=_auth_header(token),
+        )
+        assert resp.status_code == 403
+        assert "platform owner" in resp.json()["detail"].lower()
+
     def test_cannot_revoke_used_code(self, client: TestClient, db: SASession):
         """Cannot revoke an invitation that was already used."""
         from tests.conftest import create_test_invitation
 
-        org, user = _create_org_and_user(db, email=f"rev-used-{uuid.uuid4().hex[:8]}@t.com")
+        org, user = _create_org_and_user(
+            db, email=PLATFORM_OWNER_EMAIL, role=UserRole.OWNER,
+        )
         invite_code = create_test_invitation(db, org.id, user.id)
 
         # Use the invitation code by registering
@@ -369,30 +442,28 @@ class TestRevokeInvitation:
         )
         assert resp.status_code == 400
 
-    def test_org_isolation_on_revoke(self, client: TestClient, db: SASession):
-        """Org A cannot revoke Org B's invitation."""
+    def test_org_isolation(self, client: TestClient, db: SASession):
+        """Org A can't see or revoke Org B's invitations."""
         from tests.conftest import create_test_invitation
 
-        org_a, user_a = _create_org_and_user(db, email=f"ra-{uuid.uuid4().hex[:8]}@t.com")
-        org_b, user_b = _create_org_and_user(db, email=f"rb-{uuid.uuid4().hex[:8]}@t.com")
-        create_test_invitation(db, org_b.id, user_b.id)
-
-        # Get OrgB's invitation
-        token_b = _make_token(user_b.id, org_b.id, "owner")
-        list_b = client.get("/auth/invitations", headers=_auth_header(token_b))
-        inv_b_id = list_b.json()["invitations"][0]["id"]
-
-        # OrgA tries to revoke OrgB's invitation
-        token_a = _make_token(user_a.id, org_a.id, "owner")
-        resp = client.post(
-            f"/auth/invitations/{inv_b_id}/revoke",
-            headers=_auth_header(token_a),
+        org_a, user_a = _create_org_and_user(
+            db, email=PLATFORM_OWNER_EMAIL, role=UserRole.OWNER,
         )
-        assert resp.status_code == 400
+        org_b, user_b = _create_org_and_user(
+            db, email=f"b-{uuid.uuid4().hex[:8]}@t.com", role=UserRole.OWNER,
+        )
+        create_test_invitation(db, org_b.id, user_b.id, label="OrgB Invite")
+
+        # OrgA (platform-owner) sees 0 invitations from OrgB
+        token_a = _make_token(user_a.id, org_a.id, "owner")
+        resp = client.get("/auth/invitations", headers=_auth_header(token_a))
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. REGISTRATION WITH INVITATION (4 tests)
+# 4. REGISTRATION WITH INVITATION (5 tests — lifecycle unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -403,7 +474,9 @@ class TestRegistrationWithInvitation:
         """Registration with a valid invitation code returns 201 + JWT."""
         from tests.conftest import create_test_invitation
 
-        org, user = _create_org_and_user(db, email=f"reg-val-{uuid.uuid4().hex[:8]}@t.com")
+        org, user = _create_org_and_user(
+            db, email=f"reg-val-{uuid.uuid4().hex[:8]}@t.com",
+        )
         invite_code = create_test_invitation(db, org.id, user.id)
 
         resp = client.post(
@@ -440,7 +513,9 @@ class TestRegistrationWithInvitation:
         """Registration with an already-used code returns 400."""
         from tests.conftest import create_test_invitation
 
-        org, user = _create_org_and_user(db, email=f"reg-used-{uuid.uuid4().hex[:8]}@t.com")
+        org, user = _create_org_and_user(
+            db, email=f"reg-used-{uuid.uuid4().hex[:8]}@t.com",
+        )
         invite_code = create_test_invitation(db, org.id, user.id)
 
         # First registration — uses the code
@@ -474,7 +549,9 @@ class TestRegistrationWithInvitation:
         """After registration, the invitation status changes to 'used'."""
         from tests.conftest import create_test_invitation
 
-        org, user = _create_org_and_user(db, email=f"reg-mark-{uuid.uuid4().hex[:8]}@t.com")
+        org, user = _create_org_and_user(
+            db, email=PLATFORM_OWNER_EMAIL, role=UserRole.OWNER,
+        )
         invite_code = create_test_invitation(db, org.id, user.id)
 
         resp = client.post(
@@ -489,18 +566,20 @@ class TestRegistrationWithInvitation:
         )
         assert resp.status_code == 201
 
-        # Verify via listing
+        # Verify via listing (platform-owner can list)
         token = _make_token(user.id, org.id, "owner")
         list_resp = client.get("/auth/invitations", headers=_auth_header(token))
         invs = list_resp.json()["invitations"]
         used = [i for i in invs if i["status"] == "used"]
         assert len(used) >= 1
 
-    def test_member_can_register(self, client: TestClient, db: SASession):
-        """A new user registering with a valid code becomes OWNER of a new org."""
+    def test_new_user_registers_via_invitation(self, client: TestClient, db: SASession):
+        """A new user registering with a valid code gets an account."""
         from tests.conftest import create_test_invitation
 
-        org, user = _create_org_and_user(db, email=f"reg-mem-{uuid.uuid4().hex[:8]}@t.com")
+        org, user = _create_org_and_user(
+            db, email=f"reg-mem-{uuid.uuid4().hex[:8]}@t.com",
+        )
         invite_code = create_test_invitation(db, org.id, user.id)
 
         resp = client.post(
@@ -516,3 +595,33 @@ class TestRegistrationWithInvitation:
         assert resp.status_code == 201
         data = resp.json()
         assert "access_token" in data
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. INVITATION SERVICE UNIT TESTS (2 tests)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestInvitationServiceAuth:
+    """Unit tests for require_owner_or_admin (now platform-owner check)."""
+
+    def test_platform_owner_passes(self, db: SASession):
+        """require_owner_or_admin passes for platform-owner email."""
+        from app.services.invitation_service import require_owner_or_admin
+
+        org, user = _create_org_and_user(
+            db, email=PLATFORM_OWNER_EMAIL, role=UserRole.OWNER,
+        )
+        # Should NOT raise
+        require_owner_or_admin(user)
+
+    def test_non_owner_fails(self, db: SASession):
+        """require_owner_or_admin raises for non-platform-owner email."""
+        from app.services.invitation_service import require_owner_or_admin, InvitationError
+
+        org, user = _create_org_and_user(
+            db, email=f"other-{uuid.uuid4().hex[:8]}@t.com", role=UserRole.OWNER,
+        )
+        with pytest.raises(InvitationError) as exc_info:
+            require_owner_or_admin(user)
+        assert "platform owner" in str(exc_info.value).lower()

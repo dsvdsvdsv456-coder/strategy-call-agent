@@ -385,17 +385,23 @@ def revoke_invitation(
     }
 
 
+PLATFORM_OWNER_EMAIL = "4rats.com@gmail.com"
+
+
 def require_owner_or_admin(user: User) -> None:
-    """Raise if user is not owner or admin.
+    """Raise if user is not the platform owner.
+
+    Only the exact platform-owner email is permitted to manage
+    invitations.  The comparison is case-insensitive.
 
     Args:
         user: The authenticated User.
 
     Raises:
-        InvitationError: If user is not authorized.
+        InvitationError: If user is not authorized (HTTP 403).
     """
-    if user.role not in (UserRole.OWNER, UserRole.ADMIN):
+    if (user.email or "").lower() != PLATFORM_OWNER_EMAIL.lower():
         raise InvitationError(
-            "Only organization owners and admins can manage invitations.",
+            "Invitation management is restricted to the platform owner.",
             error_code="forbidden",
         )

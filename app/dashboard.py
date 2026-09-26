@@ -3792,6 +3792,17 @@ function applyRBAC(role){
   // User Management: hide create button for members
   var createBtn = document.getElementById('um-create-btn');
   if(createBtn)createBtn.style.display=isAdmin?'':'none';
+  // Invitation Management: platform-owner only
+  var isPlatformOwner = currentUser && currentUser.email && currentUser.email.toLowerCase() === '4rats.com@gmail.com';
+  var invSection = document.getElementById('inv-section');
+  var invGenBtn = document.getElementById('inv-generate-btn');
+  var invModalOverlay = document.getElementById('inv-modal-overlay');
+  var invShowOverlay = document.getElementById('inv-show-overlay');
+  if(invSection) invSection.style.display = isPlatformOwner ? '' : 'none';
+  if(invGenBtn) invGenBtn.style.display = isPlatformOwner ? '' : 'none';
+  if(invModalOverlay) invModalOverlay.style.display = 'none';
+  if(invShowOverlay) invShowOverlay.style.display = 'none';
+  if(!isPlatformOwner){ _invLastCode = null; }
 }
 
 async function doLogin(email, password){
@@ -6624,7 +6635,10 @@ async function loadOrgSettingsPage(){
     if(data.name)document.getElementById('sidebar-org-name').textContent = data.name;
     if(data.tagline)document.getElementById('sidebar-org-tagline').textContent = data.tagline;
     loadUsers();
-    loadInvitations();
+    // Invitation management is restricted to the platform owner
+    if(currentUser && currentUser.email && currentUser.email.toLowerCase() === '4rats.com@gmail.com'){
+      loadInvitations();
+    }
   }catch(e){
     showToast('Failed to load settings','error');
   }

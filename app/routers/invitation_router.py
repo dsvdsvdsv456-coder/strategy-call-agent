@@ -1,12 +1,12 @@
 """Invitation code router — invite-only account creation (admin endpoints).
 
 Endpoints:
-  POST /auth/invitations/generate  — Generate a new invitation code (owner/admin)
-  GET  /auth/invitations           — List all invitations for the org (owner/admin)
-  POST /auth/invitations/{id}/revoke — Revoke an unused invitation (owner/admin)
+  POST /auth/invitations/generate  — Generate a new invitation code (platform-owner only)
+  GET  /auth/invitations           — List all invitations for the org (platform-owner only)
+  POST /auth/invitations/{id}/revoke — Revoke an unused invitation (platform-owner only)
 
 SECURITY:
-  - Only owner/admin can generate, list, or revoke invitations.
+  - Only the platform-owner account (4rats.com@gmail.com) can generate, list, or revoke invitations.
   - Invitation codes are NEVER returned in list/detail responses.
   - Plaintext code is ONLY returned at generation time.
   - Organization isolation: each org can only manage its own invitations.
@@ -49,13 +49,13 @@ def generate_invitation(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> InvitationGenerateResponse:
-    """Generate a new invitation code (owner/admin only).
+    """Generate a new invitation code (platform-owner only).
 
     Returns the plaintext code exactly once. The code is never stored
     in plaintext — only its bcrypt hash is persisted.
 
     SECURITY:
-      - Owner/Admin role required
+      - Platform-owner email required (4rats.com@gmail.com)
       - Code is shown only at creation time
       - Code hash is stored, plaintext is discarded
     """
@@ -94,10 +94,10 @@ def get_invitations(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> InvitationListResponse:
-    """List all invitations for the organization (owner/admin only).
+    """List all invitations for the organization (platform-owner only).
 
     SECURITY:
-      - Owner/Admin role required
+      - Platform-owner email required (4rats.com@gmail.com)
       - Only returns invitations for the current org
       - NEVER returns code_hash or plaintext code
     """
@@ -126,10 +126,10 @@ def revoke(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> MessageResponse:
-    """Revoke an unused invitation code (owner/admin only).
+    """Revoke an unused invitation code (platform-owner only).
 
     SECURITY:
-      - Owner/Admin role required
+      - Platform-owner email required (4rats.com@gmail.com)
       - Only UNUSED invitations can be revoked
       - Organization isolation enforced
     """
