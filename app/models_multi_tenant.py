@@ -654,3 +654,98 @@ class OrgFormFieldMapping(Base):
         Index("ix_ffm_org_form_label", "organization_id", "form_label"),
     )
 
+
+# ---------------------------------------------------------------------------
+# InvitationStatus / InvitationCode (Invite-Only Account Creation)
+# ---------------------------------------------------------------------------
+
+class InvitationStatus(str, enum.Enum):
+    """Lifecycle status of an invitation code."""
+    UNUSED = "unused"
+    USED = "used"
+    EXPIRED = "expired"
+    REVOKED = "revoked"
+
+
+class InvitationCode(Base):
+    """One-time invitation code for invite-only account creation.
+
+    SECURITY:
+    - Code is stored as a bcrypt hash — plaintext is NEVER persisted.
+    - Each code is single-use (status → USED after redemption).
+    - Codes can optionally expire.
+    - Codes can be revoked by an admin.
+    - Only platform owner/admin can generate codes.
+    """
+    __tablename__ = "invitation_codes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    code_hash: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True,
+        comment="bcrypt hash of the invitation code",
+    )
+    code_prefix: Mapped[str] = mapped_column(
+        String(20), nullable=False,
+        comment="First segment for admin display (e.g. SCA-7XK9)",
+    )
+    status: Mapped[InvitationStatus] = mapped_column(
+        Enum(
+            InvitationStatus,
+            name="invitation_status",
+            values_callable=lambda e: [m.value for m in e],
+        ),
+        nullable=False,
+        default=InvitationStatus.UNUSED,
+        server_default=InvitationStatus.UNUSED.value,
+    )
+    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    used_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Relationships
+    created_by: Mapped["User"] = relationship(
+        foreign_keys=[created_by_user_id],
+    )
+    used_by: Mapped["User | None"] = relationship(
+        foreign_keys=[used_by_user_id],
+    )
+    organization: Mapped[Organization] = relationship()
+
+    __table_args__ = (
+        Index("ix_invitation_codes_org_id", "organization_id"),
+        Index("ix_invitation_codes_status", "status"),
+        Index("ix_invitation_codes_created_by", "created_by_user_id"),
+    )
+

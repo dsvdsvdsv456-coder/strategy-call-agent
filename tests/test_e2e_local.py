@@ -52,6 +52,9 @@ def creds():
     password = "E2ETestP@ss123!"
 
     # Register a new organization + user
+    # NOTE: Invite-only mode requires a valid invitation code.
+    # For E2E tests, use E2E_INVITATION_CODE env var or create one via DB.
+    invite_code = os.environ.get("E2E_INVITATION_CODE", "SCA-E2E-TESTCODE")
     r = requests.post(
         f"{BASE}/auth/register",
         json={
@@ -59,6 +62,7 @@ def creds():
             "email": email,
             "name": "E2E Test User",
             "password": password,
+            "invitation_code": invite_code,
         },
         timeout=10,
     )

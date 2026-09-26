@@ -228,11 +228,25 @@ class TestAuthentication:
 
     def test_register_creates_org_and_user(self, client: TestClient):
         """Registration creates organization and user, returns JWT."""
+        from tests.conftest import create_test_invitation
+        from app.database import SessionLocal
+        from app.auth import hash_password
+        from app.models_multi_tenant import User, UserRole, UserStatus
+        # Create a generator org+user to produce a valid invitation code
+        gen_db = SessionLocal()
+        try:
+            gen_org = _make_org()
+            gen_user = _create_user(gen_org.id, UserRole.OWNER,
+                                    email=f"gen-reg-{uuid.uuid4().hex[:8]}@example.com")
+            invite_code = create_test_invitation(gen_db, gen_org.id, gen_user.id)
+        finally:
+            gen_db.close()
         r = client.post("/auth/register", json={
             "organization_name": f"Reg Test {uuid.uuid4().hex[:6]}",
             "name": "Reg User",
             "email": f"reg-{uuid.uuid4().hex[:8]}@example.com",
             "password": "TestPassword123!",
+            "invitation_code": invite_code,
         })
         assert r.status_code == 201
         data = r.json()

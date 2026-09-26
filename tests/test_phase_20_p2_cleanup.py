@@ -17,7 +17,7 @@ from app.tenant import (
     _DEFAULT_ORG_ID,
     set_lead_organization,
 )
-from tests.conftest import _seed_default_organization
+from tests.conftest import _seed_default_organization, create_test_invitation
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -29,11 +29,39 @@ class TestRegisterRateLimit:
 
     def test_register_works_normally(self, client: TestClient, db_session: Session):
         """First registration within window should succeed."""
+        from app.auth import hash_password
+        from app.models_multi_tenant import User, UserRole, UserStatus
+        from app.services.crypto import generate_key
+
+        # Create a generator org+user to produce a valid invitation code
+        gen_org = Organization(
+            name=f"Gen Org {uuid.uuid4().hex[:8]}",
+            slug=f"gen-org-{uuid.uuid4().hex[:8]}",
+            status=OrganizationStatus.ACTIVE,
+            timezone="America/Chicago",
+        )
+        db_session.add(gen_org)
+        db_session.flush()
+        gen_user = User(
+            organization_id=gen_org.id,
+            email=f"gen-{uuid.uuid4().hex[:8]}@example.com",
+            full_name="Gen Admin",
+            password_hash=hash_password("StrongPass123!"),
+            role=UserRole.OWNER,
+            status=UserStatus.ACTIVE,
+        )
+        db_session.add(gen_user)
+        db_session.commit()
+        db_session.refresh(gen_org)
+        db_session.refresh(gen_user)
+        invite_code = create_test_invitation(db_session, gen_org.id, gen_user.id)
+
         payload = {
             "email": f"rate-{uuid.uuid4().hex[:8]}@example.com",
             "password": "Str0ng!Pass#2026",
             "organization_name": f"Rate Test {uuid.uuid4().hex[:6]}",
             "name": "Rate Test User",
+            "invitation_code": invite_code,
         }
         resp = client.post("/auth/register", json=payload)
         assert resp.status_code in (201, 409), f"Unexpected: {resp.status_code} {resp.text}"
@@ -53,6 +81,7 @@ class TestRegisterRateLimit:
             "password": "Str0ng!Pass#2026",
             "organization_name": f"Limited Org {uuid.uuid4().hex[:6]}",
             "name": "Limited User",
+            "invitation_code": "SCA-DUMMY-1234",
         }
         resp = client.post("/auth/register", json=payload)
         assert resp.status_code == 429

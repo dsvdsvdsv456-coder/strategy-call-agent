@@ -140,6 +140,26 @@ def bad_auth_headers():
     }
 
 
+# ---------------------------------------------------------------------------
+# Invitation helpers (invite-only registration)
+# ---------------------------------------------------------------------------
+
+def create_test_invitation(db, organization_id, created_by_user_id, *, label: str | None = None):
+    """Create a valid invitation code directly in the DB for testing.
+
+    Returns:
+        The plaintext invitation code string (e.g. 'SCA-7XK9-PQ42').
+    """
+    from app.services.invitation_service import create_invitation
+    result = create_invitation(
+        db=db,
+        created_by_user_id=created_by_user_id,
+        organization_id=organization_id,
+        label=label,
+    )
+    return result["code"]
+
+
 @pytest.fixture(scope="session")
 def client():
     """Create a TestClient that shares the lifespan (creates tables, seeds config)."""

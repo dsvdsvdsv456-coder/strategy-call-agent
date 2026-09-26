@@ -141,10 +141,45 @@ def register(
     Creates the Organization and User atomically in a single transaction.
     If either creation fails, both are rolled back.
 
+    Requires a valid, unused invitation code.
     Returns a JWT access token on success.
     """
     _check_register_rate_limit(request)
     validate_password_strength(payload.password)
+
+    # ── Validate invitation code BEFORE any account creation ────────────
+    from app.services.invitation_service import (
+        InvitationAlreadyUsedError,
+        InvitationError,
+        InvitationExpiredError,
+        InvitationNotFoundError,
+        InvitationRevokedError,
+        validate_invitation_code,
+        redeem_invitation,
+    )
+
+    try:
+        invitation = validate_invitation_code(db, payload.invitation_code)
+    except InvitationNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid invitation code.",
+        )
+    except InvitationExpiredError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This invitation code has expired.",
+        )
+    except InvitationAlreadyUsedError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This invitation code has already been used.",
+        )
+    except InvitationRevokedError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This invitation code has been revoked.",
+        )
 
     # Check if email already exists in any organization
     existing_user = db.query(User).filter(User.email == payload.email.lower()).first()
@@ -193,19 +228,26 @@ def register(
             status=UserStatus.ACTIVE,
         )
         db.add(user)
+        db.flush()  # Get user.id for invitation redemption
+
+        # ── Redeem invitation atomically (same transaction) ──────────────
+        redeem_invitation(db, invitation, user.id)
+
         db.commit()
         db.refresh(org)
         db.refresh(user)
 
         logger.info(
-            "registration successful: org=%s user=%s email=%s role=owner",
+            "registration successful: org=%s user=%s email=%s role=owner invitation=%s",
             org.id,
             user.id,
             user.email,
+            str(invitation.id)[:8],
         )
         log_audit_event(db, event_type="audit.registration_success",
                         user_id=user.id, organization_id=org.id,
-                        detail={"email": user.email, "org_name": org.name})
+                        detail={"email": user.email, "org_name": org.name,
+                                "invitation_id": str(invitation.id)})
         db.commit()
 
         # Register per-org scheduler jobs immediately so the new org's
@@ -231,6 +273,12 @@ def register(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="An account with this email already exists",
+        )
+    except InvitationAlreadyUsedError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This invitation code has already been used.",
         )
     except Exception:
         db.rollback()

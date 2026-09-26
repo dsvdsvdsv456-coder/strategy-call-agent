@@ -2603,6 +2603,10 @@ tr.clickable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;b
     <div class="login-error" id="register-error"></div>
     <form id="register-form" autocomplete="on">
       <div class="login-field">
+        <label for="reg-invitation-code">Invitation Code</label>
+        <input type="text" id="reg-invitation-code" placeholder="SCA-XXXX-XXXX" required style="text-transform:uppercase;letter-spacing:1px">
+      </div>
+      <div class="login-field">
         <label for="reg-org-name">Organization Name</label>
         <input type="text" id="reg-org-name" placeholder="Acme Inc." required>
       </div>
@@ -3321,6 +3325,68 @@ tr.clickable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;b
           <div class="skeleton skeleton-row w80" style="height:44px"></div>
         </div>
       </div>
+
+      <!-- ===== INVITATION MANAGEMENT (Invite-Only Registration) ===== -->
+      <div class="um-section" id="inv-section" style="margin-top:24px">
+        <div class="um-header">
+          <div>
+            <h4>Invitation Codes</h4>
+            <p class="desc">Generate invitation codes for new users to join your organization.</p>
+          </div>
+          <div class="um-actions">
+            <button class="btn btn-sm" onclick="loadInvitations()">Refresh</button>
+            <button class="btn btn-sm btn-primary" id="inv-generate-btn" onclick="showGenerateInvitationModal()">Generate Invitation</button>
+          </div>
+        </div>
+        <div id="inv-list">
+          <div class="skeleton skeleton-row w80" style="height:44px;margin-bottom:8px"></div>
+          <div class="skeleton skeleton-row w60" style="height:44px;margin-bottom:8px"></div>
+        </div>
+      </div>
+
+      <!-- Generate Invitation Modal -->
+      <div class="modal-overlay" id="inv-modal-overlay" style="display:none">
+        <div class="modal" style="max-width:400px">
+          <div class="modal-header">
+            <h3>Generate Invitation Code</h3>
+            <button class="modal-close" onclick="closeGenerateInvitationModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="modal-field">
+              <label for="inv-label">Label (optional)</label>
+              <input type="text" id="inv-label" placeholder="e.g. John Smith">
+            </div>
+            <div class="modal-field">
+              <label for="inv-email">Email (optional)</label>
+              <input type="email" id="inv-email" placeholder="e.g. john@example.com">
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn" onclick="closeGenerateInvitationModal()">Cancel</button>
+            <button class="btn btn-primary" id="inv-create-btn" onclick="doGenerateInvitation()">Generate</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Show Invitation Modal (displayed once after generation) -->
+      <div class="modal-overlay" id="inv-show-overlay" style="display:none">
+        <div class="modal" style="max-width:420px">
+          <div class="modal-header">
+            <h3>Invitation Code Generated</h3>
+            <button class="modal-close" onclick="closeShowInvitationModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Share this code with the person you want to invite. It will not be shown again.</p>
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-align:center">
+              <div id="inv-show-code" style="font-family:monospace;font-size:18px;font-weight:700;color:var(--accent);letter-spacing:2px;word-break:break-all"></div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-primary" onclick="copyInvitationCode()">Copy Code</button>
+            <button class="btn" onclick="closeShowInvitationModal()">Done</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ===== ACTIVITY / AUDIT PAGE (Phase 6F) ===== -->
@@ -3763,7 +3829,7 @@ async function doLogin(email, password){
   }
 }
 
-async function doRegister(orgName, name, email, password){
+async function doRegister(orgName, name, email, password, invitationCode){
   var errEl = document.getElementById('register-error');
   var btn = document.getElementById('reg-btn');
   errEl.style.display='none';
@@ -3773,7 +3839,7 @@ async function doRegister(orgName, name, email, password){
     var r = await fetch('/auth/register',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({organization_name:orgName, name:name, email:email, password:password})
+      body:JSON.stringify({organization_name:orgName, name:name, email:email, password:password, invitation_code:invitationCode})
     });
     var data = await r.json();
     if(!r.ok){
@@ -3826,7 +3892,8 @@ document.getElementById('register-form').addEventListener('submit',function(e){
   var name = document.getElementById('reg-name').value;
   var email = document.getElementById('reg-email').value;
   var password = document.getElementById('reg-password').value;
-  doRegister(orgName, name, email, password);
+  var invitationCode = document.getElementById('reg-invitation-code').value;
+  doRegister(orgName, name, email, password, invitationCode);
 });
 
 // Toggle login/register
@@ -6557,6 +6624,7 @@ async function loadOrgSettingsPage(){
     if(data.name)document.getElementById('sidebar-org-name').textContent = data.name;
     if(data.tagline)document.getElementById('sidebar-org-tagline').textContent = data.tagline;
     loadUsers();
+    loadInvitations();
   }catch(e){
     showToast('Failed to load settings','error');
   }
@@ -6597,6 +6665,112 @@ async function saveOrgSettings(){
     showToast('Failed to save settings','error');
   }finally{
     btn.disabled=false;
+  }
+}
+
+/* =========================================
+   INVITATION MANAGEMENT (Invite-Only)
+   ========================================= */
+var _invLastCode = null;
+
+async function loadInvitations(){
+  var el = document.getElementById('inv-list');
+  el.innerHTML = '<div class="skeleton skeleton-row w80" style="height:44px;margin-bottom:8px"></div><div class="skeleton skeleton-row w60" style="height:44px;margin-bottom:8px"></div>';
+  try{
+    var data = await api('/auth/invitations');
+    var invitations = data.invitations || [];
+    if(invitations.length === 0){
+      el.innerHTML = '<div class="empty-state" style="padding:24px"><div class="icon">&#128273;</div><h3>No invitations</h3><p>Generate an invitation code to invite new users.</p></div>';
+      return;
+    }
+    var statusColors = {unused:'var(--accent)',used:'var(--text-muted)',expired:'var(--warning)',revoked:'var(--danger)'};
+    var html = '<div class="table-wrap"><table class="um-table"><thead><tr>'
+      + '<th>Code</th><th>Status</th><th>Label</th><th>Email</th><th>Created</th><th>Expires</th><th>Used</th><th>Actions</th>'
+      + '</tr></thead><tbody>';
+    for(var i = 0; i < invitations.length; i++){
+      var inv = invitations[i];
+      var sc = statusColors[inv.status] || 'var(--text-muted)';
+      html += '<tr>'
+        + '<td class="um-name-cell"><code style="font-size:12px;background:var(--surface);padding:2px 6px;border-radius:4px">' + esc(inv.code_prefix) + '</code></td>'
+        + '<td><span class="um-badge" style="background:' + sc + '22;color:' + sc + ';border:1px solid ' + sc + '33">' + esc(inv.status.charAt(0).toUpperCase() + inv.status.slice(1)) + '</span></td>'
+        + '<td style="font-size:12px">' + esc(inv.label || '—') + '</td>'
+        + '<td style="font-size:12px">' + esc(inv.email || '—') + '</td>'
+        + '<td style="font-size:12px">' + esc(inv.created_at ? new Date(inv.created_at).toLocaleDateString() : '—') + '</td>'
+        + '<td style="font-size:12px">' + esc(inv.expires_at ? new Date(inv.expires_at).toLocaleDateString() : '—') + '</td>'
+        + '<td style="font-size:12px">' + esc(inv.used_by_name || '—') + '</td>'
+        + '<td>';
+      if(inv.status === 'unused'){
+        html += '<button class="btn btn-sm btn-ghost" style="color:var(--danger)" onclick="doRevokeInvitation(\'' + esc(inv.id) + '\')">Revoke</button>';
+      }
+      html += '</td></tr>';
+    }
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+  }catch(e){
+    el.innerHTML = '<div style="color:var(--danger);padding:16px">Failed to load invitations. <button class="btn btn-sm" onclick="loadInvitations()">Retry</button></div>';
+    showToast('Failed to load invitations','error');
+  }
+}
+
+function showGenerateInvitationModal(){
+  document.getElementById('inv-modal-overlay').style.display = 'flex';
+  document.getElementById('inv-label').value = '';
+  document.getElementById('inv-email').value = '';
+  document.getElementById('inv-label').focus();
+}
+
+function closeGenerateInvitationModal(){
+  document.getElementById('inv-modal-overlay').style.display = 'none';
+}
+
+async function doGenerateInvitation(){
+  var btn = document.getElementById('inv-create-btn');
+  btn.disabled = true;
+  btn.textContent = 'Generating...';
+  try{
+    var payload = {};
+    var label = document.getElementById('inv-label').value.trim();
+    var email = document.getElementById('inv-email').value.trim();
+    if(label) payload.label = label;
+    if(email) payload.email = email;
+    var data = await api('/auth/invitations/generate', {method:'POST', body:JSON.stringify(payload)});
+    _invLastCode = data.code;
+    closeGenerateInvitationModal();
+    document.getElementById('inv-show-code').textContent = data.code;
+    document.getElementById('inv-show-overlay').style.display = 'flex';
+    loadInvitations();
+    showToast('Invitation generated','success');
+  }catch(e){
+    showToast('Failed to generate invitation: '+e.message,'error');
+  }finally{
+    btn.disabled = false;
+    btn.textContent = 'Generate';
+  }
+}
+
+function copyInvitationCode(){
+  if(_invLastCode){
+    navigator.clipboard.writeText(_invLastCode).then(function(){
+      showToast('Code copied to clipboard','success');
+    }).catch(function(){
+      showToast('Failed to copy','error');
+    });
+  }
+}
+
+function closeShowInvitationModal(){
+  document.getElementById('inv-show-overlay').style.display = 'none';
+  _invLastCode = null;
+}
+
+async function doRevokeInvitation(invId){
+  if(!confirm('Are you sure you want to revoke this invitation code?')) return;
+  try{
+    await api('/auth/invitations/' + invId + '/revoke', {method:'POST'});
+    showToast('Invitation revoked','success');
+    loadInvitations();
+  }catch(e){
+    showToast('Failed to revoke invitation: '+e.message,'error');
   }
 }
 

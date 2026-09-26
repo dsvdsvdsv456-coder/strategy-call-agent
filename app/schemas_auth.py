@@ -24,6 +24,7 @@ class RegisterRequest(BaseModel):
     """Request body for POST /auth/register.
 
     Creates both an Organization and an Owner User atomically.
+    Requires a valid invitation code for invite-only access.
     """
     organization_name: str = Field(
         ..., min_length=1, max_length=200,
@@ -39,6 +40,10 @@ class RegisterRequest(BaseModel):
     password: str = Field(
         ..., min_length=8, max_length=128,
         description="Password (minimum 8 characters)",
+    )
+    invitation_code: str = Field(
+        ..., min_length=8, max_length=30,
+        description="Invitation code (e.g. SCA-7XK9-PQ42)",
     )
 
 
@@ -245,3 +250,74 @@ class ChangePasswordRequest(BaseModel):
         ..., min_length=8, max_length=128,
         description="New password (minimum 8 characters)",
     )
+
+
+# ---------------------------------------------------------------------------
+# Invitation Code Schemas (Invite-Only Account Creation)
+# ---------------------------------------------------------------------------
+
+
+class InvitationGenerateRequest(BaseModel):
+    """Request body for POST /auth/invitations/generate.
+
+    Only owner/admin can generate invitations.
+    """
+    label: str | None = Field(
+        default=None, max_length=200,
+        description="Optional customer/org label",
+    )
+    email: EmailStr | None = Field(
+        default=None,
+        description="Optional intended recipient email",
+    )
+    expires_in_days: int | None = Field(
+        default=None, ge=1, le=365,
+        description="Optional expiration in days from now",
+    )
+
+
+class InvitationRedeemRequest(BaseModel):
+    """Request body for POST /auth/register (invitation_code field).
+
+    The invitation code must be valid and unused.
+    """
+    invitation_code: str = Field(
+        ..., min_length=8, max_length=30,
+        description="Invitation code (e.g. SCA-7XK9-PQ42)",
+    )
+
+
+class InvitationInfo(BaseModel):
+    """Safe invitation info for API responses — NEVER includes code_hash."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    code_prefix: str
+    status: str
+    label: str | None = None
+    email: str | None = None
+    expires_at: str | None = None
+    used_at: str | None = None
+    revoked_at: str | None = None
+    created_at: str
+
+
+class InvitationGenerateResponse(BaseModel):
+    """Response from POST /auth/invitations/generate.
+
+    SECURITY: The plaintext code is ONLY returned here.
+    """
+    id: str
+    code: str  # plaintext — shown once, never stored
+    code_prefix: str
+    label: str | None = None
+    email: str | None = None
+    expires_at: str | None = None
+    created_at: str
+    status: str = "unused"
+
+
+class InvitationListResponse(BaseModel):
+    """Response from GET /auth/invitations."""
+    invitations: list[InvitationInfo]
+    total: int

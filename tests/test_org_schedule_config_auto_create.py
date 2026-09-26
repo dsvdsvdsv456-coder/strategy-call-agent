@@ -20,6 +20,8 @@ from sqlalchemy.orm import Session as SASession
 
 from app.database import SessionLocal
 from app.models_multi_tenant import (
+    InvitationCode,
+    InvitationStatus,
     OrgScheduleConfig,
     Organization,
     OrganizationStatus,
@@ -27,6 +29,8 @@ from app.models_multi_tenant import (
     UserRole,
     UserStatus,
 )
+from app.services.crypto import generate_key
+from tests.conftest import create_test_invitation
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -39,6 +43,34 @@ def _unique_slug() -> str:
     return f"org-{uuid.uuid4().hex[:8]}"
 
 
+def _create_test_user(db_session, email: str = None):
+    """Create an org + owner user directly in the DB for test setup."""
+    from app.auth import hash_password
+
+    email = email or _unique_email()
+    org = Organization(
+        name=f"Gen Org {uuid.uuid4().hex[:8]}",
+        slug=_unique_slug(),
+        status=OrganizationStatus.ACTIVE,
+        timezone="America/Chicago",
+    )
+    db_session.add(org)
+    db_session.flush()
+    user = User(
+        organization_id=org.id,
+        email=email.lower(),
+        full_name="Test Admin",
+        password_hash=hash_password("StrongPass123!"),
+        role=UserRole.OWNER,
+        status=UserStatus.ACTIVE,
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(org)
+    db_session.refresh(user)
+    return org, user
+
+
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 class TestOrgScheduleConfigAutoCreate:
@@ -46,6 +78,12 @@ class TestOrgScheduleConfigAutoCreate:
 
     def test_new_organization_creates_config(self, client: TestClient):
         """POST /auth/register creates an OrgScheduleConfig row."""
+        db = SessionLocal()
+        try:
+            gen_org, gen_user = _create_test_user(db)
+            invite_code = create_test_invitation(db, gen_org.id, gen_user.id)
+        finally:
+            db.close()
         email = _unique_email()
         resp = client.post(
             "/auth/register",
@@ -54,6 +92,7 @@ class TestOrgScheduleConfigAutoCreate:
                 "name": "Config Tester",
                 "email": email,
                 "password": "StrongPass123!",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 201
@@ -78,6 +117,12 @@ class TestOrgScheduleConfigAutoCreate:
 
     def test_config_belongs_to_correct_organization(self, client: TestClient):
         """Created config references the correct organization_id."""
+        db = SessionLocal()
+        try:
+            gen_org, gen_user = _create_test_user(db)
+            invite_code = create_test_invitation(db, gen_org.id, gen_user.id)
+        finally:
+            db.close()
         email = _unique_email()
         resp = client.post(
             "/auth/register",
@@ -86,6 +131,7 @@ class TestOrgScheduleConfigAutoCreate:
                 "name": "Owner User",
                 "email": email,
                 "password": "StrongPass123!",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 201
@@ -117,6 +163,12 @@ class TestOrgScheduleConfigAutoCreate:
 
     def test_default_timezone_matches_organization(self, client: TestClient):
         """Config timezone defaults to the organization's timezone."""
+        db = SessionLocal()
+        try:
+            gen_org, gen_user = _create_test_user(db)
+            invite_code = create_test_invitation(db, gen_org.id, gen_user.id)
+        finally:
+            db.close()
         email = _unique_email()
         resp = client.post(
             "/auth/register",
@@ -125,6 +177,7 @@ class TestOrgScheduleConfigAutoCreate:
                 "name": "TZ User",
                 "email": email,
                 "password": "StrongPass123!",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 201
@@ -151,6 +204,12 @@ class TestOrgScheduleConfigAutoCreate:
 
     def test_default_reminder_settings(self, client: TestClient):
         """Config has correct default reminder_enabled, hour, and minute."""
+        db = SessionLocal()
+        try:
+            gen_org, gen_user = _create_test_user(db)
+            invite_code = create_test_invitation(db, gen_org.id, gen_user.id)
+        finally:
+            db.close()
         email = _unique_email()
         resp = client.post(
             "/auth/register",
@@ -159,6 +218,7 @@ class TestOrgScheduleConfigAutoCreate:
                 "name": "Def User",
                 "email": email,
                 "password": "StrongPass123!",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 201
@@ -187,6 +247,12 @@ class TestOrgScheduleConfigAutoCreate:
 
     def test_no_duplicate_config_created(self, client: TestClient):
         """Registering once creates exactly one OrgScheduleConfig."""
+        db = SessionLocal()
+        try:
+            gen_org, gen_user = _create_test_user(db)
+            invite_code = create_test_invitation(db, gen_org.id, gen_user.id)
+        finally:
+            db.close()
         email = _unique_email()
         resp = client.post(
             "/auth/register",
@@ -195,6 +261,7 @@ class TestOrgScheduleConfigAutoCreate:
                 "name": "Dup Checker",
                 "email": email,
                 "password": "StrongPass123!",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 201
@@ -226,6 +293,13 @@ class TestRegistrationAtomicity:
         from unittest.mock import patch
         from app.routers.auth_router import _register_hits
 
+        db = SessionLocal()
+        try:
+            gen_org, gen_user = _create_test_user(db)
+            invite_code = create_test_invitation(db, gen_org.id, gen_user.id)
+        finally:
+            db.close()
+
         email = _unique_email()
 
         # Clear rate limiter so this test isn't blocked by prior register calls
@@ -242,6 +316,7 @@ class TestRegistrationAtomicity:
                     "name": "Atomic User",
                     "email": email,
                     "password": "StrongPass123!",
+                    "invitation_code": invite_code,
                 },
             )
 
@@ -334,6 +409,13 @@ class TestImmediateSchedulerRegistration:
         """After successful registration, reschedule_org_scheduler_jobs is called."""
         from unittest.mock import patch
 
+        db = SessionLocal()
+        try:
+            gen_org, gen_user = _create_test_user(db)
+            invite_code = create_test_invitation(db, gen_org.id, gen_user.id)
+        finally:
+            db.close()
+
         email = _unique_email()
         call_args = []
 
@@ -351,6 +433,7 @@ class TestImmediateSchedulerRegistration:
                     "name": "Scheduler User",
                     "email": email,
                     "password": "StrongPass123!",
+                    "invitation_code": invite_code,
                 },
             )
 
@@ -374,6 +457,13 @@ class TestImmediateSchedulerRegistration:
     def test_reschedule_called_after_commit(self, client: TestClient):
         """reschedule_org_scheduler_jobs is called after the DB commit succeeds."""
         from unittest.mock import patch
+
+        db = SessionLocal()
+        try:
+            gen_org, gen_user = _create_test_user(db)
+            invite_code = create_test_invitation(db, gen_org.id, gen_user.id)
+        finally:
+            db.close()
 
         email = _unique_email()
 
@@ -401,6 +491,7 @@ class TestImmediateSchedulerRegistration:
                     "name": "Post Commit User",
                     "email": email,
                     "password": "StrongPass123!",
+                    "invitation_code": invite_code,
                 },
             )
 
@@ -410,6 +501,13 @@ class TestImmediateSchedulerRegistration:
         """If registration fails, reschedule_org_scheduler_jobs is NOT called."""
         from unittest.mock import patch
         from app.routers.auth_router import _register_hits
+
+        db = SessionLocal()
+        try:
+            gen_org, gen_user = _create_test_user(db)
+            invite_code = create_test_invitation(db, gen_org.id, gen_user.id)
+        finally:
+            db.close()
 
         email = _unique_email()
         _register_hits.clear()
@@ -435,6 +533,7 @@ class TestImmediateSchedulerRegistration:
                         "name": "Fail User",
                         "email": email,
                         "password": "StrongPass123!",
+                        "invitation_code": invite_code,
                     },
                 )
 
@@ -446,6 +545,13 @@ class TestImmediateSchedulerRegistration:
     def test_reschedule_failure_does_not_break_registration(self, client: TestClient):
         """If reschedule_org_scheduler_jobs raises, registration still succeeds."""
         from unittest.mock import patch
+
+        db = SessionLocal()
+        try:
+            gen_org, gen_user = _create_test_user(db)
+            invite_code = create_test_invitation(db, gen_org.id, gen_user.id)
+        finally:
+            db.close()
 
         email = _unique_email()
 
@@ -463,6 +569,7 @@ class TestImmediateSchedulerRegistration:
                     "name": "Reschedule User",
                     "email": email,
                     "password": "StrongPass123!",
+                    "invitation_code": invite_code,
                 },
             )
 
@@ -491,6 +598,13 @@ class TestImmediateSchedulerRegistration:
         """The new hook does not re-trigger for existing organizations."""
         from unittest.mock import patch
 
+        db = SessionLocal()
+        try:
+            gen_org, gen_user = _create_test_user(db)
+            invite_code = create_test_invitation(db, gen_org.id, gen_user.id)
+        finally:
+            db.close()
+
         email = _unique_email()
         reschedule_calls = []
 
@@ -508,6 +622,7 @@ class TestImmediateSchedulerRegistration:
                     "name": "New Only User",
                     "email": email,
                     "password": "StrongPass123!",
+                    "invitation_code": invite_code,
                 },
             )
 

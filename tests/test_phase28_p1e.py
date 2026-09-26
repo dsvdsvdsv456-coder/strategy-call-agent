@@ -406,12 +406,39 @@ class TestRegistrationAuditEvents:
 
     def test_registration_success_emits_audit(self, client, db_session):
         """Successful registration writes audit.registration_success."""
+        from tests.conftest import create_test_invitation
+        from app.auth import hash_password
+
         unique = uuid.uuid4().hex[:8]
+        # Create a generator org+user to produce a valid invitation code
+        gen_org = Organization(
+            name=f"Gen Org {uuid.uuid4().hex[:8]}",
+            slug=f"gen-org-{uuid.uuid4().hex[:8]}",
+            status=OrganizationStatus.ACTIVE,
+            timezone="America/Chicago",
+        )
+        db_session.add(gen_org)
+        db_session.flush()
+        gen_user = User(
+            organization_id=gen_org.id,
+            email=f"gen-audit-{unique}@test.com",
+            full_name="Gen Admin",
+            password_hash=hash_password("StrongPass123!"),
+            role=UserRole.OWNER,
+            status=UserStatus.ACTIVE,
+        )
+        db_session.add(gen_user)
+        db_session.commit()
+        db_session.refresh(gen_org)
+        db_session.refresh(gen_user)
+        invite_code = create_test_invitation(db_session, gen_org.id, gen_user.id)
+
         response = client.post("/auth/register", json={
             "email": f"p1e-reg-{unique}@test.com",
             "password": "StrongPass123!",
             "organization_name": f"P1E Register Org {unique}",
             "name": "P1E Register User",
+            "invitation_code": invite_code,
         })
         assert response.status_code == 201
 

@@ -40,6 +40,7 @@ from app.models import Base, EventLog, Lead, LeadStatus, ScheduleConfig
 # Phase 6B.3 — Auth routers
 from app.routers.auth_router import router as auth_router
 from app.routers.organization_router import router as org_router
+from app.routers.invitation_router import router as invitation_router
 from app.schemas import FormSubmission
 from app.tenant import lookup_organization_by_slug
 
@@ -846,6 +847,7 @@ from app.dashboard import router as dashboard_router
 app.include_router(dashboard_router)
 app.include_router(auth_router)
 app.include_router(org_router)
+app.include_router(invitation_router)
 
 # Phase 6E: Webhook configuration management endpoints.
 from app.routers.webhook_config_router import router as webhook_config_router

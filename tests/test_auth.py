@@ -34,6 +34,7 @@ from app.models_multi_tenant import (
     UserStatus,
 )
 from app.services.crypto import generate_key
+from tests.conftest import create_test_invitation
 
 # ── Test Constants ────────────────────────────────────────────────────────────
 
@@ -130,8 +131,10 @@ def _auth_header(token: str) -> dict:
 class TestRegistration:
     """POST /auth/register tests."""
 
-    def test_register_success(self, client: TestClient):
+    def test_register_success(self, client: TestClient, db):
         """Successful registration returns 201 + JWT token."""
+        org, user = _create_org_and_user(db, email=f"gen-{uuid.uuid4().hex[:8]}@test.com")
+        invite_code = create_test_invitation(db, org.id, user.id)
         resp = client.post(
             "/auth/register",
             json={
@@ -139,6 +142,7 @@ class TestRegistration:
                 "name": "John Owner",
                 "email": f"john-{uuid.uuid4().hex[:8]}@acme.com",
                 "password": "SecurePass123!",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 201
@@ -147,8 +151,10 @@ class TestRegistration:
         assert data["token_type"] == "bearer"
         assert len(data["access_token"]) > 20
 
-    def test_register_creates_org_and_user(self, client: TestClient):
+    def test_register_creates_org_and_user(self, client: TestClient, db):
         """Registration creates both Organization and User atomically."""
+        org, user = _create_org_and_user(db, email=f"gen2-{uuid.uuid4().hex[:8]}@test.com")
+        invite_code = create_test_invitation(db, org.id, user.id)
         resp = client.post(
             "/auth/register",
             json={
@@ -156,6 +162,7 @@ class TestRegistration:
                 "name": "Jane Admin",
                 "email": f"jane-{uuid.uuid4().hex[:8]}@widget.com",
                 "password": "AnotherPass99!",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 201
@@ -181,7 +188,8 @@ class TestRegistration:
 
     def test_register_duplicate_email(self, client: TestClient, db):
         """Registration with existing email returns 409."""
-        _create_org_and_user(db, email="dupe@test.com")
+        org, user = _create_org_and_user(db, email="dupe@test.com")
+        invite_code = create_test_invitation(db, org.id, user.id)
         resp = client.post(
             "/auth/register",
             json={
@@ -189,13 +197,16 @@ class TestRegistration:
                 "name": "Dupe User",
                 "email": "dupe@test.com",
                 "password": "StrongPass123!",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 409
         assert "already exists" in resp.json()["detail"]
 
-    def test_register_weak_password_rejected(self, client: TestClient):
+    def test_register_weak_password_rejected(self, client: TestClient, db):
         """Registration with short password returns 422."""
+        org, user = _create_org_and_user(db, email=f"weak-{uuid.uuid4().hex[:8]}@gen.com")
+        invite_code = create_test_invitation(db, org.id, user.id)
         resp = client.post(
             "/auth/register",
             json={
@@ -203,12 +214,15 @@ class TestRegistration:
                 "name": "Weak User",
                 "email": f"weak-{uuid.uuid4().hex[:8]}@test.com",
                 "password": "short",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 422
 
-    def test_register_empty_organization_name(self, client: TestClient):
+    def test_register_empty_organization_name(self, client: TestClient, db):
         """Registration with empty org name returns 422."""
+        org, user = _create_org_and_user(db, email=f"noorg-gen-{uuid.uuid4().hex[:8]}@test.com")
+        invite_code = create_test_invitation(db, org.id, user.id)
         resp = client.post(
             "/auth/register",
             json={
@@ -216,12 +230,15 @@ class TestRegistration:
                 "name": "No Org",
                 "email": f"noorg-{uuid.uuid4().hex[:8]}@test.com",
                 "password": "StrongPass123!",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 422
 
-    def test_register_invalid_email(self, client: TestClient):
+    def test_register_invalid_email(self, client: TestClient, db):
         """Registration with invalid email returns 422."""
+        org, user = _create_org_and_user(db, email=f"bademail-gen-{uuid.uuid4().hex[:8]}@test.com")
+        invite_code = create_test_invitation(db, org.id, user.id)
         resp = client.post(
             "/auth/register",
             json={
@@ -229,6 +246,7 @@ class TestRegistration:
                 "name": "Bad Email",
                 "email": "not-an-email",
                 "password": "StrongPass123!",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 422
@@ -251,8 +269,10 @@ class TestPasswordSecurity:
         assert user.password_hash.startswith("$2b$")
         assert user.password_hash != "MySecurePass!"
 
-    def test_password_hash_never_returned_in_register(self, client: TestClient):
+    def test_password_hash_never_returned_in_register(self, client: TestClient, db):
         """Register response never includes password_hash."""
+        org, user = _create_org_and_user(db, email=f"safe-gen-{uuid.uuid4().hex[:8]}@test.com")
+        invite_code = create_test_invitation(db, org.id, user.id)
         resp = client.post(
             "/auth/register",
             json={
@@ -260,6 +280,7 @@ class TestPasswordSecurity:
                 "name": "Safe User",
                 "email": f"safe-{uuid.uuid4().hex[:8]}@test.com",
                 "password": "SafePass123!",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 201
@@ -821,9 +842,11 @@ class TestSecurity:
         assert resp.status_code == 200
         assert resp.json()["organization"]["id"] == str(org_a.id)
 
-    def test_organization_slug_is_url_safe(self, client: TestClient):
+    def test_organization_slug_is_url_safe(self, client: TestClient, db):
         """Registered org slug is URL-safe lowercase."""
         suffix = uuid.uuid4().hex[:8]
+        gen_org, gen_user = _create_org_and_user(db, email=f"slug-gen-{suffix}@test.com")
+        invite_code = create_test_invitation(db, gen_org.id, gen_user.id)
         resp = client.post(
             "/auth/register",
             json={
@@ -831,6 +854,7 @@ class TestSecurity:
                 "name": "Slug Test",
                 "email": f"slug-{suffix}@test.com",
                 "password": "StrongPass123!",
+                "invitation_code": invite_code,
             },
         )
         assert resp.status_code == 201
